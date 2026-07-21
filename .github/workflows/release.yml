@@ -20,6 +20,10 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
       - name: Test
         run: go test ./...
 
@@ -31,6 +35,21 @@ jobs:
           build linux   amd64 save-sync-linux-amd64
           build darwin  arm64 save-sync-macos-arm64
           build darwin  amd64 save-sync-macos-amd64
+          ls -lh build/
+
+      - name: Build Decky plugin zip
+        run: |
+          # Engine binary bundled into the plugin (Steam Deck is linux/amd64).
+          GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o decky/bin/save-sync .
+          # Frontend.
+          corepack enable
+          corepack prepare pnpm@9 --activate
+          pnpm --dir decky install --no-frozen-lockfile
+          pnpm --dir decky build
+          # Assemble the plugin folder and zip it (top-level dir = plugin name).
+          rm -rf staging && mkdir -p "staging/Save Sync"
+          cp -r decky/plugin.json decky/package.json decky/main.py decky/dist decky/bin "staging/Save Sync/"
+          (cd staging && zip -r "../build/save-sync-decky.zip" "Save Sync")
           ls -lh build/
 
       - name: Publish release

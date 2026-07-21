@@ -1,0 +1,11 @@
+{
+  "name": "Save Sync",
+  "author": "Spyes",
+  "flags": [],
+  "api_version": 1,
+  "publish": {
+    "tags": ["saves", "git", "utility"],
+    "description": "Manually upload/download game saves to a GitHub repo from Game Mode. Configure games in the desktop app; this is the Game Mode control surface.",
+    "image": ""
+  }
+}

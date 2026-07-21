@@ -65,8 +65,14 @@ func expandPath(p string) (string, error) {
 	return filepath.Clean(p), nil
 }
 
-// configDir is <UserConfigDir>/save-sync, holding config.json.
+// configDir is where config.json + managed clones live. It honors an explicit
+// SAVESYNC_CONFIG_DIR override (used by the Decky plugin, which runs as a
+// different user than the desktop app and must point at the deck user's dir);
+// otherwise it defaults to <UserConfigDir>/save-sync.
 func configDir() (string, error) {
+	if override := strings.TrimSpace(os.Getenv("SAVESYNC_CONFIG_DIR")); override != "" {
+		return override, nil
+	}
 	base, err := os.UserConfigDir()
 	if err != nil {
 		return "", err

@@ -5,12 +5,19 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"os/exec"
 	"runtime"
 	"time"
 )
 
 func main() {
+	// Machine-readable CLI mode (used by the Decky plugin) when the first arg
+	// is a known subcommand; otherwise fall through to serving the web UI.
+	if len(os.Args) > 1 && isCLICommand(os.Args[1]) {
+		os.Exit(runCLI(os.Args[1:], os.Stdout))
+	}
+
 	portFlag := flag.Int("port", 0, "port to listen on (overrides config)")
 	noOpen := flag.Bool("no-open", false, "do not open the browser on start")
 	flag.Parse()

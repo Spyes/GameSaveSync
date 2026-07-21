@@ -25,6 +25,14 @@ Your browser opens to the UI automatically. Flags: `--port <n>` (default 8787), 
    - **GitHub repo URL** — e.g. `https://github.com/you/game-saves.git`
    - **Local save folder** — the game's save directory on this device (see below).
 
+## Steam Deck Game Mode (Decky plugin)
+
+In Game Mode there's no easy browser, so there's a [Decky Loader](https://decky.xyz/) plugin (in [`decky/`](decky/)) that puts **Upload** / **Download** buttons for each game right in the Quick Access menu. Configure your games and token once in the desktop web app (Desktop Mode); the plugin reads the same config and drives the same engine.
+
+Install it from a release: Decky ▸ Settings ▸ enable **Developer mode** ▸ **Install from URL**, and paste the `save-sync-decky.zip` asset URL from the [latest release](https://github.com/Spyes/GameSaveSync/releases).
+
+The binary also has a JSON CLI the plugin uses (and you can script with): `save-sync list | status | upload <id> [--note ..] | download <id> [--hash ..] | history <id>`. Set `SAVESYNC_CONFIG_DIR` to point at a specific config directory.
+
 ## Setting up a second device (discovery)
 
 You don't have to re-enter each game by hand. On the new device, set its PAT, then under **Discover games from another device**:
