@@ -109,19 +109,22 @@ func stripNewlines(s string) string {
 }
 
 // DiscoverGitHub scans every repo the token can see for a save-sync manifest
-// and returns all games across all of them. Repos without a manifest are
-// skipped. Manifest probes run with bounded concurrency.
-func DiscoverGitHub(token string) ([]DiscoveredGame, error) {
+// and returns all games across all of them. Repos with no manifest (404) are
+// skipped silently; repos that fail to probe (network error, rate limit,
+// corrupt manifest) are counted in `failed` so the caller can warn that the
+// list may be incomplete. Manifest probes run with bounded concurrency.
+func DiscoverGitHub(token string) (games []DiscoveredGame, failed int, err error) {
 	if token == "" {
-		return nil, fmt.Errorf("set a GitHub token first")
+		return nil, 0, fmt.Errorf("set a GitHub token first")
 	}
 	repos, err := ghListRepos(token)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	type result struct {
-		games []DiscoveredGame
+		games  []DiscoveredGame
+		failed bool
 	}
 	results := make([]result, len(repos))
 
@@ -131,12 +134,23 @@ func DiscoverGitHub(token string) ([]DiscoveredGame, error) {
 		wg.Add(1)
 		go func(i int, repo ghRepo) {
 			defer wg.Done()
+			// A single bad repo must never crash the process (this runs in a
+			// child goroutine that net/http cannot recover for us).
+			defer func() {
+				if recover() != nil {
+					results[i].failed = true
+				}
+			}()
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
 			m, err := ghGetManifest(token, repo.FullName)
-			if err != nil || m == nil {
-				return // probe error or no manifest — skip this repo
+			if err != nil {
+				results[i].failed = true // genuine error — do not silently drop
+				return
+			}
+			if m == nil {
+				return // 404: repo simply has no manifest
 			}
 			for _, g := range m.Games {
 				results[i].games = append(results[i].games, DiscoveredGame{
@@ -149,9 +163,12 @@ func DiscoverGitHub(token string) ([]DiscoveredGame, error) {
 	}
 	wg.Wait()
 
-	games := []DiscoveredGame{}
+	games = []DiscoveredGame{}
 	for _, r := range results {
 		games = append(games, r.games...)
+		if r.failed {
+			failed++
+		}
 	}
-	return games, nil
+	return games, failed, nil
 }

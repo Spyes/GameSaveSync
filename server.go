@@ -307,14 +307,18 @@ func (s *Server) handleDiscoverRepo(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, s.markConfigured(games))
+	writeJSON(w, http.StatusOK, map[string]any{"games": s.markConfigured(games)})
 }
 
 func (s *Server) handleDiscoverGitHub(w http.ResponseWriter, r *http.Request) {
-	games, err := DiscoverGitHub(s.cfg.GithubToken)
+	games, failed, err := DiscoverGitHub(s.cfg.GithubToken)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, s.markConfigured(games))
+	resp := map[string]any{"games": s.markConfigured(games)}
+	if failed > 0 {
+		resp["warning"] = fmt.Sprintf("%d repo(s) couldn't be checked (network error or GitHub rate limit) — this list may be incomplete.", failed)
+	}
+	writeJSON(w, http.StatusOK, resp)
 }

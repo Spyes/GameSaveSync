@@ -36,6 +36,8 @@ For each game found, pick **this device's** local folder and click **Adopt**. (T
 
 This works because every Upload also commits a small `.savesync.json` manifest at the repo root describing the games — that's what a new device reads. Repos created before this feature are still discoverable by URL (their subfolders are listed); they gain a manifest on the next upload.
 
+> The manifest records each game's local folder path (which usually contains your OS username) and the uploading device's hostname, as convenience hints. Keep your saves repo **private** if you'd rather not publish those.
+
 ## Everyday use
 
 - On the device you just played on: **⬆ Upload save**.

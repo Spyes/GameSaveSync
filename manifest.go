@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -37,8 +38,25 @@ type DiscoveredGame struct {
 	AlreadyConfigured bool              `json:"alreadyConfigured"`
 }
 
+// sanitize drops nil or nameless entries so downstream consumers can iterate
+// safely (a remote manifest may contain e.g. `"games":[null]`).
+func (m *Manifest) sanitize() {
+	games := m.Games[:0]
+	for _, g := range m.Games {
+		if g != nil && g.Name != "" {
+			games = append(games, g)
+		}
+	}
+	m.Games = games
+	if m.Version == 0 {
+		m.Version = 1
+	}
+}
+
 // readManifest loads the manifest from a clone's working tree, returning an
-// empty (version 1) manifest when the file is absent.
+// empty (version 1) manifest when the file is absent. A corrupt manifest
+// returns an error so callers do NOT overwrite it — that would drop other
+// devices' games.
 func readManifest(cachePath string) (*Manifest, error) {
 	data, err := os.ReadFile(filepath.Join(cachePath, manifestFile))
 	if os.IsNotExist(err) {
@@ -49,12 +67,9 @@ func readManifest(cachePath string) (*Manifest, error) {
 	}
 	var m Manifest
 	if err := json.Unmarshal(data, &m); err != nil {
-		// A corrupt manifest shouldn't block uploads — start fresh.
-		return &Manifest{Version: 1}, nil
+		return nil, fmt.Errorf("%s is corrupt: %w", manifestFile, err)
 	}
-	if m.Version == 0 {
-		m.Version = 1
-	}
+	m.sanitize()
 	return &m, nil
 }
 
@@ -74,6 +89,7 @@ func parseManifest(data []byte) (*Manifest, error) {
 	if err := json.Unmarshal(data, &m); err != nil {
 		return nil, err
 	}
+	m.sanitize()
 	return &m, nil
 }
 

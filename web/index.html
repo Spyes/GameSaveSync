@@ -303,9 +303,11 @@ document.getElementById("discoverGitHub").onclick = async () => {
   status.className = "status";
   setBtnBusy(btn, true, "Scanning");
   try {
-    const games = await api("GET", "/api/discover/github");
-    showStatus(status, `Found ${games.length} game(s).`, true);
+    const resp = await api("GET", "/api/discover/github");
+    const games = resp.games || [];
     renderDiscovered(games);
+    if (resp.warning) showStatus(status, `Found ${games.length} game(s). ${resp.warning}`, false);
+    else showStatus(status, `Found ${games.length} game(s).`, true);
   } catch (e) { showStatus(status, e.message, false); }
   setBtnBusy(btn, false, "🔍 Discover from GitHub");
 };
@@ -318,9 +320,10 @@ document.getElementById("importRepo").onclick = async () => {
   status.className = "status";
   setBtnBusy(btn, true, "Importing");
   try {
-    const games = await api("POST", "/api/discover/repo", { repoUrl: url });
-    showStatus(status, `Found ${games.length} game(s) in that repo.`, true);
+    const resp = await api("POST", "/api/discover/repo", { repoUrl: url });
+    const games = resp.games || [];
     renderDiscovered(games);
+    showStatus(status, `Found ${games.length} game(s) in that repo.`, true);
   } catch (e) { showStatus(status, e.message, false); }
   setBtnBusy(btn, false, "Import");
 };
