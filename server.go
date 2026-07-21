@@ -47,6 +47,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/syncs/", s.handleSyncItem) // /{id}, /{id}/upload, /{id}/download, /{id}/history
 	mux.HandleFunc("/api/discover/repo", s.handleDiscoverRepo)
 	mux.HandleFunc("/api/discover/github", s.handleDiscoverGitHub)
+	mux.HandleFunc("/api/remote-status", s.handleRemoteStatus)
 
 	return mux
 }
@@ -229,12 +230,12 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request, sync *Sync
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body) // note is optional
 
-	result, err := Upload(sync, s.cfg.GithubToken, deviceName(), body.Note)
+	result, hash, err := Upload(sync, s.cfg.GithubToken, deviceName(), body.Note)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	s.recordAction(sync, result)
+	s.recordAction(sync, result, hash)
 	writeJSON(w, http.StatusOK, map[string]string{"result": result})
 }
 
@@ -243,12 +244,12 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request, sync *Sy
 		writeErr(w, http.StatusMethodNotAllowed, fmt.Errorf("use POST"))
 		return
 	}
-	result, err := Download(sync, s.cfg.GithubToken)
+	result, hash, err := Download(sync, s.cfg.GithubToken)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	s.recordAction(sync, result)
+	s.recordAction(sync, result, hash)
 	writeJSON(w, http.StatusOK, map[string]string{"result": result})
 }
 
@@ -261,10 +262,14 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request, sync *Syn
 	writeJSON(w, http.StatusOK, versions)
 }
 
-// recordAction stores a short status line on the sync for display.
-func (s *Server) recordAction(sync *Sync, result string) {
+// recordAction stores a short status line and, when provided, the commit hash
+// this device is now in sync with (used by the update-available poll).
+func (s *Server) recordAction(sync *Sync, result, syncedHash string) {
 	s.cfg.mu.Lock()
 	sync.LastAction = result
+	if syncedHash != "" {
+		sync.LastSyncedRemote = syncedHash
+	}
 	_ = s.cfg.save()
 	s.cfg.mu.Unlock()
 }
@@ -321,4 +326,20 @@ func (s *Server) handleDiscoverGitHub(w http.ResponseWriter, r *http.Request) {
 		resp["warning"] = fmt.Sprintf("%d repo(s) couldn't be checked (network error or GitHub rate limit) — this list may be incomplete.", failed)
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// handleRemoteStatus reports, per sync, whether the remote has a newer save
+// than this device last synced. Polled by the UI; never downloads anything.
+func (s *Server) handleRemoteStatus(w http.ResponseWriter, r *http.Request) {
+	// Snapshot the syncs under lock so the (slow) git fetches run without
+	// holding the config mutex and without racing concurrent edits.
+	s.cfg.mu.Lock()
+	snapshot := make([]Sync, len(s.cfg.Syncs))
+	for i, sync := range s.cfg.Syncs {
+		snapshot[i] = *sync
+	}
+	token := s.cfg.GithubToken
+	s.cfg.mu.Unlock()
+
+	writeJSON(w, http.StatusOK, RemoteStatuses(snapshot, token))
 }

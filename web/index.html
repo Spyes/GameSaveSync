@@ -58,6 +58,14 @@
     border-radius: 50%; display: inline-block; animation: spin .7s linear infinite; vertical-align: -2px; }
   @keyframes spin { to { transform: rotate(360deg); } }
   .empty { color: var(--muted); padding: 20px; text-align: center; }
+  .cardhead { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .badge { font-size: 12px; font-weight: 600; padding: 3px 9px; border-radius: 999px; white-space: nowrap; }
+  .badge:empty { display: none; }
+  .badge.update { background: var(--accent); color: #fff; }
+  .badge.insync { background: rgba(46,204,113,.15); color: #2ecc71; }
+  .badge.err { background: rgba(255,92,92,.12); color: var(--danger); }
+  button.down.attention { box-shadow: 0 0 0 2px var(--accent); animation: pulse 1.6s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { box-shadow: 0 0 0 2px var(--accent); } 50% { box-shadow: 0 0 0 4px var(--accent); } }
 </style>
 </head>
 <body>
@@ -143,15 +151,51 @@ function showStatus(node, msg, ok) {
   node.textContent = msg;
 }
 
+let badges = {}; // syncId -> { badge element, downloadBtn }
+
 async function loadSyncs() {
   const list = document.getElementById("list");
   list.innerHTML = "";
+  badges = {};
   const syncs = await api("GET", "/api/syncs");
   if (!syncs.length) {
     list.append(el("div", { className: "empty", textContent: "No saves yet — add one below." }));
     return;
   }
   for (const s of syncs) list.append(renderCard(s));
+  pollStatus();
+}
+
+// pollStatus checks the remote for each game and updates its badge. It never
+// downloads — the user still clicks Download. Runs on a timer and after each
+// upload/download.
+let polling = false;
+async function pollStatus() {
+  if (polling || !Object.keys(badges).length) return;
+  polling = true;
+  try {
+    const statuses = await api("GET", "/api/remote-status");
+    for (const [id, entry] of Object.entries(badges)) {
+      const st = statuses[id];
+      const b = entry.badge;
+      entry.downloadBtn.classList.remove("attention");
+      if (!st || st.status === "no-remote") {
+        b.className = "badge"; b.textContent = "";
+      } else if (st.status === "update-available") {
+        b.className = "badge update"; b.textContent = "⬇ Update available";
+        entry.downloadBtn.classList.add("attention");
+      } else if (st.status === "in-sync") {
+        b.className = "badge insync"; b.textContent = "✓ In sync";
+      } else {
+        b.className = "badge err"; b.textContent = "status unavailable";
+        b.title = st.detail || "";
+      }
+    }
+  } catch (e) {
+    // Network/transient — leave badges as-is; next tick retries.
+  } finally {
+    polling = false;
+  }
 }
 
 function renderCard(s) {
@@ -163,6 +207,8 @@ function renderCard(s) {
   const versionsBtn = el("button", { className: "link", textContent: "Versions" });
   const deleteBtn = el("button", { className: "link", textContent: "Remove", style: "margin-left:auto" });
   const note = el("input", { placeholder: "optional note for this upload", style: "flex:1 1 200px" });
+  const badge = el("span", { className: "badge" });
+  badges[s.id] = { badge, downloadBtn };
 
   uploadBtn.onclick = async () => {
     setBtnBusy(uploadBtn, true, "Uploading");
@@ -172,6 +218,7 @@ function renderCard(s) {
       showStatus(status, r.result, true);
       note.value = "";
       if (versions.classList.contains("show")) loadVersions(s, versions);
+      pollStatus();
     } catch (e) { showStatus(status, e.message, false); }
     setBtnBusy(uploadBtn, false, "⬆ Upload save");
   };
@@ -183,6 +230,7 @@ function renderCard(s) {
     try {
       const r = await api("POST", `/api/syncs/${s.id}/download`);
       showStatus(status, r.result, true);
+      pollStatus();
     } catch (e) { showStatus(status, e.message, false); }
     setBtnBusy(downloadBtn, false, "⬇ Download save");
   };
@@ -199,7 +247,7 @@ function renderCard(s) {
   };
 
   const card = el("div", { className: "card" }, [
-    el("h3", { textContent: s.name }),
+    el("div", { className: "cardhead" }, [el("h3", { textContent: s.name }), badge]),
     el("div", { className: "meta", textContent: s.repoUrl }),
     el("div", { className: "meta", textContent: s.localPath }),
     el("div", { className: "actions" }, [uploadBtn, downloadBtn, note]),
@@ -330,6 +378,7 @@ document.getElementById("importRepo").onclick = async () => {
 
 loadStatus();
 loadSyncs();
+setInterval(pollStatus, 15000); // check the remote for updates every 15s
 </script>
 </body>
 </html>

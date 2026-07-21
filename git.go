@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-git/go-git/v5"
@@ -26,6 +27,28 @@ type Version struct {
 	When    string `json:"when"`
 	Author  string `json:"author"`
 	Message string `json:"message"`
+}
+
+// Per-clone locks serialize all git operations against a single managed clone,
+// so background polling (fetch) can never run concurrently with an Upload or
+// Download on the same repo and corrupt its working tree or index.
+var (
+	repoLocksMu sync.Mutex
+	repoLocks   = map[string]*sync.Mutex{}
+)
+
+// lockRepo blocks until it holds the lock for cachePath and returns the unlock
+// func (call via defer).
+func lockRepo(cachePath string) func() {
+	repoLocksMu.Lock()
+	mu := repoLocks[cachePath]
+	if mu == nil {
+		mu = &sync.Mutex{}
+		repoLocks[cachePath] = mu
+	}
+	repoLocksMu.Unlock()
+	mu.Lock()
+	return mu.Unlock
 }
 
 // authFor builds HTTP basic auth from the PAT. GitHub accepts the token as the
@@ -132,32 +155,36 @@ func resetToRemote(repo *git.Repository, branch string) (hadRemote bool, err err
 }
 
 // Upload mirrors the sync's local folder into the clone's <name>/ subfolder,
-// commits the change, and pushes it. Returns a human-readable result line.
-func Upload(s *Sync, token, device, note string) (string, error) {
+// commits the change, and pushes it. Returns a human-readable result line and
+// the commit hash now in sync for this game (for the update-available check).
+func Upload(s *Sync, token, device, note string) (string, string, error) {
 	cachePath, err := repoCachePath(s.RepoURL)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
+	unlock := lockRepo(cachePath)
+	defer unlock()
+
 	repo, err := ensureRepo(s.RepoURL, cachePath, resolveBranch(nil, s.Branch), token)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	branch := resolveBranch(repo, s.Branch)
 
 	if err := fetchOrigin(repo, token); err != nil {
-		return "", err
+		return "", "", err
 	}
 	// Base our commit on the latest remote state so history stays linear.
 	if _, err := resetToRemote(repo, branch); err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	if _, err := os.Stat(s.LocalPath); err != nil {
-		return "", fmt.Errorf("local folder %q: %w", s.LocalPath, err)
+		return "", "", fmt.Errorf("local folder %q: %w", s.LocalPath, err)
 	}
 	subfolder := filepath.Join(cachePath, s.Name)
 	if err := mirror(s.LocalPath, subfolder); err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	// Update the self-describing manifest so other devices can discover this
@@ -169,17 +196,22 @@ func Upload(s *Sync, token, device, note string) (string, error) {
 
 	w, err := repo.Worktree()
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	if err := w.AddWithOptions(&git.AddOptions{All: true}); err != nil {
-		return "", fmt.Errorf("staging changes: %w", err)
+		return "", "", fmt.Errorf("staging changes: %w", err)
 	}
 	status, err := w.Status()
 	if err != nil {
-		return "", fmt.Errorf("checking status: %w", err)
+		return "", "", fmt.Errorf("checking status: %w", err)
 	}
 	if status.IsClean() {
-		return "Already up to date — nothing to upload.", nil
+		// Nothing changed — local already matches the remote for this game.
+		hash := ""
+		if head, err := repo.Head(); err == nil {
+			hash, _ = latestCommitForGame(repo, head.Hash(), s.Name)
+		}
+		return "Already up to date — nothing to upload.", hash, nil
 	}
 
 	msg := fmt.Sprintf("Upload %q from %s @ %s", s.Name, device, time.Now().UTC().Format(time.RFC3339))
@@ -190,13 +222,13 @@ func Upload(s *Sync, token, device, note string) (string, error) {
 		Author: &object.Signature{Name: "save-sync", Email: "save-sync@localhost", When: time.Now()},
 	})
 	if err != nil {
-		return "", fmt.Errorf("committing: %w", err)
+		return "", "", fmt.Errorf("committing: %w", err)
 	}
 
 	if err := push(repo, branch, token); err != nil {
-		return "", err
+		return "", "", err
 	}
-	return fmt.Sprintf("Uploaded (commit %s).", commit.String()[:7]), nil
+	return fmt.Sprintf("Uploaded (commit %s).", commit.String()[:7]), commit.String(), nil
 }
 
 // push pushes the branch, falling back to a force push if the remote diverged
@@ -228,39 +260,48 @@ func push(repo *git.Repository, branch, token string) error {
 }
 
 // Download fetches the latest remote state and mirrors the clone's <name>/
-// subfolder onto the sync's local folder. Returns a human-readable result line.
-func Download(s *Sync, token string) (string, error) {
+// subfolder onto the sync's local folder. Returns a human-readable result line
+// and the commit hash now in sync for this game.
+func Download(s *Sync, token string) (string, string, error) {
 	cachePath, err := repoCachePath(s.RepoURL)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
+	unlock := lockRepo(cachePath)
+	defer unlock()
+
 	repo, err := ensureRepo(s.RepoURL, cachePath, resolveBranch(nil, s.Branch), token)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	branch := resolveBranch(repo, s.Branch)
 
 	if err := fetchOrigin(repo, token); err != nil {
-		return "", err
+		return "", "", err
 	}
 	hadRemote, err := resetToRemote(repo, branch)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	if !hadRemote {
-		return "", fmt.Errorf("remote branch %q has no commits yet — upload from another device first", branch)
+		return "", "", fmt.Errorf("remote branch %q has no commits yet — upload from another device first", branch)
 	}
 
 	subfolder := filepath.Join(cachePath, s.Name)
 	if _, err := os.Stat(subfolder); err != nil {
 		// Guard against wiping the local folder when the repo has no save for
 		// this name yet.
-		return "", fmt.Errorf("no save named %q found in this repo — check the name matches the uploading device", s.Name)
+		return "", "", fmt.Errorf("no save named %q found in this repo — check the name matches the uploading device", s.Name)
 	}
 	if err := mirror(subfolder, s.LocalPath); err != nil {
-		return "", err
+		return "", "", err
 	}
-	return "Downloaded latest save.", nil
+
+	hash := ""
+	if head, err := repo.Head(); err == nil {
+		hash, _ = latestCommitForGame(repo, head.Hash(), s.Name)
+	}
+	return "Downloaded latest save.", hash, nil
 }
 
 // History returns the commit list touching the sync's <name>/ subfolder.
@@ -269,6 +310,9 @@ func History(s *Sync, token string, limit int) ([]Version, error) {
 	if err != nil {
 		return nil, err
 	}
+	unlock := lockRepo(cachePath)
+	defer unlock()
+
 	repo, err := ensureRepo(s.RepoURL, cachePath, resolveBranch(nil, s.Branch), token)
 	if err != nil {
 		return nil, err
@@ -316,6 +360,9 @@ func DiscoverRepo(repoURL, token string) ([]DiscoveredGame, error) {
 	if err != nil {
 		return nil, err
 	}
+	unlock := lockRepo(cachePath)
+	defer unlock()
+
 	repo, err := ensureRepo(repoURL, cachePath, "main", token)
 	if err != nil {
 		return nil, err
@@ -357,4 +404,97 @@ func DiscoverRepo(repoURL, token string) ([]DiscoveredGame, error) {
 		games = append(games, DiscoveredGame{Name: n, RepoURL: repoURL})
 	}
 	return games, nil
+}
+
+// latestCommitForGame returns the hash of the newest commit reachable from
+// `from` that touches the game's <name>/ subfolder, or "" if none does.
+func latestCommitForGame(repo *git.Repository, from plumbing.Hash, name string) (string, error) {
+	prefix := path.Clean(name) + "/"
+	iter, err := repo.Log(&git.LogOptions{
+		From:       from,
+		PathFilter: func(p string) bool { return strings.HasPrefix(p, prefix) },
+	})
+	if err != nil {
+		return "", err
+	}
+	defer iter.Close()
+	c, err := iter.Next()
+	if err != nil {
+		return "", nil // no commit touches this game
+	}
+	return c.Hash.String(), nil
+}
+
+// RemoteState is the poll result for one sync.
+type RemoteState struct {
+	Status string `json:"status"` // "in-sync" | "update-available" | "no-remote" | "error"
+	Detail string `json:"detail,omitempty"`
+}
+
+// RemoteStatuses fetches each repo once and reports, per sync, whether the
+// remote has a newer save for that game than this device last synced. It never
+// downloads — it only compares commit hashes. `syncs` should be a snapshot
+// (value copies) taken under the config lock so this can run in the background.
+func RemoteStatuses(syncs []Sync, token string) map[string]RemoteState {
+	out := make(map[string]RemoteState, len(syncs))
+
+	// Group syncs by repo so each repo is fetched only once per poll.
+	byRepo := map[string][]Sync{}
+	order := []string{}
+	for _, s := range syncs {
+		if _, ok := byRepo[s.RepoURL]; !ok {
+			order = append(order, s.RepoURL)
+		}
+		byRepo[s.RepoURL] = append(byRepo[s.RepoURL], s)
+	}
+
+	for _, repoURL := range order {
+		group := byRepo[repoURL]
+		cachePath, err := repoCachePath(repoURL)
+		if err != nil {
+			for _, s := range group {
+				out[s.ID] = RemoteState{Status: "error", Detail: err.Error()}
+			}
+			continue
+		}
+
+		unlock := lockRepo(cachePath)
+		repo, err := ensureRepo(repoURL, cachePath, resolveBranch(nil, group[0].Branch), token)
+		if err == nil {
+			err = fetchOrigin(repo, token)
+		}
+		if err != nil {
+			unlock()
+			for _, s := range group {
+				out[s.ID] = RemoteState{Status: "error", Detail: err.Error()}
+			}
+			continue
+		}
+		for _, s := range group {
+			out[s.ID] = gameRemoteState(repo, s)
+		}
+		unlock()
+	}
+	return out
+}
+
+// gameRemoteState computes one sync's status against the fetched remote refs.
+func gameRemoteState(repo *git.Repository, s Sync) RemoteState {
+	branch := resolveBranch(repo, s.Branch)
+	remoteRef, err := repo.Reference(plumbing.NewRemoteReferenceName("origin", branch), true)
+	if err != nil {
+		return RemoteState{Status: "no-remote"}
+	}
+	latest, err := latestCommitForGame(repo, remoteRef.Hash(), s.Name)
+	if err != nil {
+		return RemoteState{Status: "error", Detail: err.Error()}
+	}
+	if latest == "" {
+		return RemoteState{Status: "no-remote"} // game not present in the repo yet
+	}
+	if latest != s.LastSyncedRemote {
+		// Either this device has never synced the game, or the remote advanced.
+		return RemoteState{Status: "update-available"}
+	}
+	return RemoteState{Status: "in-sync"}
 }

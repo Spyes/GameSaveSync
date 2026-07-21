@@ -20,6 +20,11 @@ type Sync struct {
 	LocalPath  string `json:"localPath"`
 	Branch     string `json:"branch"`
 	LastAction string `json:"lastAction,omitempty"` // human-readable status of the last upload/download
+	// LastSyncedRemote is the commit hash (touching this game's subfolder) that
+	// this device last uploaded or downloaded. Polling compares it against the
+	// remote tip to decide whether an update is available. Never triggers an
+	// automatic download — sync stays manual.
+	LastSyncedRemote string `json:"lastSyncedRemote,omitempty"`
 }
 
 // Config is the whole persisted state: server port, GitHub token, and syncs.

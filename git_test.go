@@ -50,7 +50,7 @@ func TestRoundTrip(t *testing.T) {
 
 	sA := &Sync{ID: "a", Name: "GameA", RepoURL: repoURL, LocalPath: src}
 
-	if res, err := Upload(sA, "", "deviceA", "first upload"); err != nil {
+	if res, _, err := Upload(sA, "", "deviceA", "first upload"); err != nil {
 		t.Fatalf("first upload: %v", err)
 	} else {
 		t.Logf("upload 1: %s", res)
@@ -62,7 +62,7 @@ func TestRoundTrip(t *testing.T) {
 	if err := os.Remove(filepath.Join(src, "sub", "inner.txt")); err != nil {
 		t.Fatal(err)
 	}
-	if res, err := Upload(sA, "", "deviceA", ""); err != nil {
+	if res, _, err := Upload(sA, "", "deviceA", ""); err != nil {
 		t.Fatalf("second upload: %v", err)
 	} else {
 		t.Logf("upload 2: %s", res)
@@ -81,7 +81,7 @@ func TestRoundTrip(t *testing.T) {
 	dst := t.TempDir()
 	writeFile(t, filepath.Join(dst, "stale.txt"), "should be deleted")
 	sB := &Sync{ID: "b", Name: "GameA", RepoURL: repoURL, LocalPath: dst}
-	if res, err := Download(sB, ""); err != nil {
+	if res, _, err := Download(sB, ""); err != nil {
 		t.Fatalf("download: %v", err)
 	} else {
 		t.Logf("download: %s", res)
@@ -117,14 +117,14 @@ func TestDownloadUnknownNameProtectsLocal(t *testing.T) {
 	// Seed the repo with GameA.
 	src := t.TempDir()
 	writeFile(t, filepath.Join(src, "save.dat"), "v1")
-	if _, err := Upload(&Sync{ID: "a", Name: "GameA", RepoURL: remote, LocalPath: src}, "", "deviceA", ""); err != nil {
+	if _, _, err := Upload(&Sync{ID: "a", Name: "GameA", RepoURL: remote, LocalPath: src}, "", "deviceA", ""); err != nil {
 		t.Fatalf("seed upload: %v", err)
 	}
 
 	// Download a name that doesn't exist in the repo.
 	dst := t.TempDir()
 	writeFile(t, filepath.Join(dst, "precious.txt"), "keep me")
-	_, err := Download(&Sync{ID: "b", Name: "GameB", RepoURL: remote, LocalPath: dst}, "")
+	_, _, err := Download(&Sync{ID: "b", Name: "GameB", RepoURL: remote, LocalPath: dst}, "")
 	if err == nil {
 		t.Fatal("expected error downloading unknown name, got nil")
 	}
@@ -147,7 +147,7 @@ func TestManifestAndDiscover(t *testing.T) {
 
 	src := t.TempDir()
 	writeFile(t, filepath.Join(src, "save.dat"), "v1")
-	if _, err := Upload(&Sync{ID: "a", Name: "Elden Ring", RepoURL: remote, LocalPath: src}, "", "deviceA", ""); err != nil {
+	if _, _, err := Upload(&Sync{ID: "a", Name: "Elden Ring", RepoURL: remote, LocalPath: src}, "", "deviceA", ""); err != nil {
 		t.Fatalf("upload: %v", err)
 	}
 
@@ -197,5 +197,53 @@ func TestDiscoverFallbackNoManifest(t *testing.T) {
 	}
 	if len(games) != 1 || games[0].Name != "GameX" {
 		t.Fatalf("expected fallback [GameX], got %+v", games)
+	}
+}
+
+// TestRemoteStatus verifies the update-available detection: a device that has
+// never synced (or is behind the remote tip for its game) reports
+// "update-available", and one at the current tip reports "in-sync".
+func TestRemoteStatus(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+
+	remote := t.TempDir()
+	if out, err := exec.Command("git", "init", "--bare", "-b", "main", remote).CombinedOutput(); err != nil {
+		t.Fatalf("git init --bare: %v\n%s", err, out)
+	}
+
+	src := t.TempDir()
+	writeFile(t, filepath.Join(src, "save.dat"), "v1")
+	_, h1, err := Upload(&Sync{Name: "GameA", RepoURL: remote, LocalPath: src}, "", "deviceA", "")
+	if err != nil {
+		t.Fatalf("upload 1: %v", err)
+	}
+
+	get := func(s Sync) string {
+		s.RepoURL = remote
+		return RemoteStatuses([]Sync{s}, "")[s.ID].Status
+	}
+
+	// Never synced this game here → update available.
+	if got := get(Sync{ID: "never", Name: "GameA"}); got != "update-available" {
+		t.Errorf("never-synced: got %q, want update-available", got)
+	}
+	// At the current tip → in sync.
+	if got := get(Sync{ID: "current", Name: "GameA", LastSyncedRemote: h1}); got != "in-sync" {
+		t.Errorf("current: got %q, want in-sync", got)
+	}
+	// A game not in the repo → no-remote.
+	if got := get(Sync{ID: "missing", Name: "GameB"}); got != "no-remote" {
+		t.Errorf("missing game: got %q, want no-remote", got)
+	}
+
+	// Remote advances → a device pinned at h1 is now behind.
+	writeFile(t, filepath.Join(src, "save.dat"), "v2")
+	if _, _, err := Upload(&Sync{Name: "GameA", RepoURL: remote, LocalPath: src}, "", "deviceA", ""); err != nil {
+		t.Fatalf("upload 2: %v", err)
+	}
+	if got := get(Sync{ID: "behind", Name: "GameA", LastSyncedRemote: h1}); got != "update-available" {
+		t.Errorf("behind: got %q, want update-available", got)
 	}
 }
