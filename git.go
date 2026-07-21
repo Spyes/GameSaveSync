@@ -180,18 +180,22 @@ func Upload(s *Sync, token, device, note string) (string, string, error) {
 		return "", "", err
 	}
 
-	if _, err := os.Stat(s.LocalPath); err != nil {
-		return "", "", fmt.Errorf("local folder %q: %w", s.LocalPath, err)
+	local, err := expandPath(s.LocalPath)
+	if err != nil {
+		return "", "", err
+	}
+	if _, err := os.Stat(local); err != nil {
+		return "", "", fmt.Errorf("local folder %q: %w", local, err)
 	}
 	subfolder := filepath.Join(cachePath, s.Name)
-	if err := mirror(s.LocalPath, subfolder); err != nil {
+	if err := mirror(local, subfolder); err != nil {
 		return "", "", err
 	}
 
 	// Update the self-describing manifest so other devices can discover this
 	// game (see manifest.go). Failure here shouldn't abort the save upload.
 	if m, err := readManifest(cachePath); err == nil {
-		upsertGame(m, s.Name, runtime.GOOS, s.LocalPath, device)
+		upsertGame(m, s.Name, runtime.GOOS, local, device)
 		_ = writeManifest(cachePath, m)
 	}
 
@@ -278,6 +282,11 @@ func Download(s *Sync, token, wantHash string) (string, string, error) {
 	}
 	branch := resolveBranch(repo, s.Branch)
 
+	local, err := expandPath(s.LocalPath)
+	if err != nil {
+		return "", "", err
+	}
+
 	if err := fetchOrigin(repo, token); err != nil {
 		return "", "", err
 	}
@@ -314,7 +323,7 @@ func Download(s *Sync, token, wantHash string) (string, string, error) {
 		// name at the chosen commit.
 		return "", "", fmt.Errorf("no save named %q found at that version — check the name matches the uploading device", s.Name)
 	}
-	if err := mirror(subfolder, s.LocalPath); err != nil {
+	if err := mirror(subfolder, local); err != nil {
 		return "", "", err
 	}
 

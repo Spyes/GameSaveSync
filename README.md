@@ -53,6 +53,7 @@ This works because every Upload also commits a small `.savesync.json` manifest a
 - **Steam Deck (Proton games):** `~/.local/share/Steam/steamapps/compatdata/<appid>/pfx/drive_c/users/steamuser/...` — the exact path varies per game (AppData/Documents inside the Proton prefix).
 - **Windows:** commonly `%USERPROFILE%\AppData\Roaming\...`, `...\AppData\Local\...`, `Documents\My Games\...`, or `Saved Games\...`.
 - [PCGamingWiki](https://www.pcgamingwiki.com/) lists the save location for most games on both platforms.
+- Paths must be absolute; a leading `~` is expanded to your home directory (e.g. `~/.local/share/...`).
 
 ## Build from source
 

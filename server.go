@@ -115,6 +115,12 @@ func (s *Server) handleSyncs(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, fmt.Errorf("name cannot contain slashes"))
 			return
 		}
+		resolved, err := expandPath(in.LocalPath)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		in.LocalPath = resolved
 		s.cfg.mu.Lock()
 		for _, existing := range s.cfg.Syncs {
 			if existing.RepoURL == in.RepoURL && existing.Name == in.Name {
@@ -125,7 +131,7 @@ func (s *Server) handleSyncs(w http.ResponseWriter, r *http.Request) {
 		}
 		in.ID = newSubID()
 		s.cfg.Syncs = append(s.cfg.Syncs, &in)
-		err := s.cfg.save()
+		err = s.cfg.save()
 		s.cfg.mu.Unlock()
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, err)
@@ -181,6 +187,16 @@ func (s *Server) handleSyncCRUD(w http.ResponseWriter, r *http.Request, sync *Sy
 			writeErr(w, http.StatusBadRequest, err)
 			return
 		}
+		// Resolve the local path before locking so a bad path is rejected up front.
+		newLocal := ""
+		if v := strings.TrimSpace(in.LocalPath); v != "" {
+			resolved, err := expandPath(v)
+			if err != nil {
+				writeErr(w, http.StatusBadRequest, err)
+				return
+			}
+			newLocal = resolved
+		}
 		s.cfg.mu.Lock()
 		if v := strings.TrimSpace(in.Name); v != "" && !strings.ContainsAny(v, `/\`) {
 			sync.Name = v
@@ -188,8 +204,8 @@ func (s *Server) handleSyncCRUD(w http.ResponseWriter, r *http.Request, sync *Sy
 		if v := strings.TrimSpace(in.RepoURL); v != "" {
 			sync.RepoURL = v
 		}
-		if v := strings.TrimSpace(in.LocalPath); v != "" {
-			sync.LocalPath = v
+		if newLocal != "" {
+			sync.LocalPath = newLocal
 		}
 		sync.Branch = strings.TrimSpace(in.Branch)
 		err := s.cfg.save()

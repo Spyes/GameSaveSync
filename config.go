@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -38,6 +39,31 @@ type Config struct {
 }
 
 const defaultPort = 8787
+
+// expandPath resolves a user-entered local folder: it expands a leading "~"
+// to the home directory and requires the result to be absolute, so save files
+// can never be written relative to wherever the binary happens to run.
+func expandPath(p string) (string, error) {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return "", fmt.Errorf("path is empty")
+	}
+	if p == "~" || strings.HasPrefix(p, "~/") || strings.HasPrefix(p, `~\`) {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("cannot resolve home directory: %w", err)
+		}
+		if p == "~" {
+			p = home
+		} else {
+			p = filepath.Join(home, p[2:])
+		}
+	}
+	if !filepath.IsAbs(p) {
+		return "", fmt.Errorf("please use an absolute path (e.g. /home/deck/... or C:\\Users\\you\\...), got %q", p)
+	}
+	return filepath.Clean(p), nil
+}
 
 // configDir is <UserConfigDir>/save-sync, holding config.json.
 func configDir() (string, error) {
