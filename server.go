@@ -244,7 +244,12 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request, sync *Sy
 		writeErr(w, http.StatusMethodNotAllowed, fmt.Errorf("use POST"))
 		return
 	}
-	result, hash, err := Download(sync, s.cfg.GithubToken)
+	var body struct {
+		Hash string `json:"hash"` // optional: a specific version to download
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+
+	result, hash, err := Download(sync, s.cfg.GithubToken, strings.TrimSpace(body.Hash))
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
@@ -259,7 +264,18 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request, sync *Syn
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, versions)
+	s.cfg.mu.Lock()
+	current := sync.LastSyncedRemote
+	s.cfg.mu.Unlock()
+	latest := ""
+	if len(versions) > 0 {
+		latest = versions[0].Hash // newest commit touching this game
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"versions": versions,
+		"current":  current,
+		"latest":   latest,
+	})
 }
 
 // recordAction stores a short status line and, when provided, the commit hash

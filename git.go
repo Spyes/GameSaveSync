@@ -26,7 +26,8 @@ type Version struct {
 	Short   string `json:"short"`
 	When    string `json:"when"`
 	Author  string `json:"author"`
-	Message string `json:"message"`
+	Message string `json:"message"` // commit subject (first line)
+	Note    string `json:"note"`    // the note the user attached at upload (commit body)
 }
 
 // Per-clone locks serialize all git operations against a single managed clone,
@@ -260,9 +261,10 @@ func push(repo *git.Repository, branch, token string) error {
 }
 
 // Download fetches the latest remote state and mirrors the clone's <name>/
-// subfolder onto the sync's local folder. Returns a human-readable result line
-// and the commit hash now in sync for this game.
-func Download(s *Sync, token string) (string, string, error) {
+// subfolder onto the sync's local folder. When wantHash is empty it downloads
+// the latest; otherwise it downloads that specific version (commit). Returns a
+// human-readable result line and the commit hash now in sync for this game.
+func Download(s *Sync, token, wantHash string) (string, string, error) {
 	cachePath, err := repoCachePath(s.RepoURL)
 	if err != nil {
 		return "", "", err
@@ -279,29 +281,56 @@ func Download(s *Sync, token string) (string, string, error) {
 	if err := fetchOrigin(repo, token); err != nil {
 		return "", "", err
 	}
-	hadRemote, err := resetToRemote(repo, branch)
-	if err != nil {
-		return "", "", err
-	}
-	if !hadRemote {
-		return "", "", fmt.Errorf("remote branch %q has no commits yet — upload from another device first", branch)
+
+	var target plumbing.Hash
+	if wantHash == "" {
+		hadRemote, err := resetToRemote(repo, branch)
+		if err != nil {
+			return "", "", err
+		}
+		if !hadRemote {
+			return "", "", fmt.Errorf("remote branch %q has no commits yet — upload from another device first", branch)
+		}
+		if head, err := repo.Head(); err == nil {
+			target = head.Hash()
+		}
+	} else {
+		target = plumbing.NewHash(wantHash)
+		if _, err := repo.CommitObject(target); err != nil {
+			return "", "", fmt.Errorf("version %s not found in this repo", short(wantHash))
+		}
+		w, err := repo.Worktree()
+		if err != nil {
+			return "", "", err
+		}
+		if err := w.Reset(&git.ResetOptions{Commit: target, Mode: git.HardReset}); err != nil {
+			return "", "", fmt.Errorf("checking out version %s: %w", short(wantHash), err)
+		}
 	}
 
 	subfolder := filepath.Join(cachePath, s.Name)
 	if _, err := os.Stat(subfolder); err != nil {
-		// Guard against wiping the local folder when the repo has no save for
-		// this name yet.
-		return "", "", fmt.Errorf("no save named %q found in this repo — check the name matches the uploading device", s.Name)
+		// Guard against wiping the local folder when there's no save for this
+		// name at the chosen commit.
+		return "", "", fmt.Errorf("no save named %q found at that version — check the name matches the uploading device", s.Name)
 	}
 	if err := mirror(subfolder, s.LocalPath); err != nil {
 		return "", "", err
 	}
 
-	hash := ""
-	if head, err := repo.Head(); err == nil {
-		hash, _ = latestCommitForGame(repo, head.Hash(), s.Name)
+	synced, _ := latestCommitForGame(repo, target, s.Name)
+	if wantHash == "" {
+		return "Downloaded latest save.", synced, nil
 	}
-	return "Downloaded latest save.", hash, nil
+	return fmt.Sprintf("Downloaded version %s.", short(wantHash)), synced, nil
+}
+
+// short trims a commit hash to 7 chars for display, tolerating short inputs.
+func short(hash string) string {
+	if len(hash) > 7 {
+		return hash[:7]
+	}
+	return hash
 }
 
 // History returns the commit list touching the sync's <name>/ subfolder.
@@ -341,12 +370,18 @@ func History(s *Sync, token string, limit int) ([]Version, error) {
 		if err != nil {
 			break
 		}
+		subject, note := c.Message, ""
+		if i := strings.Index(c.Message, "\n\n"); i >= 0 {
+			subject = strings.TrimSpace(c.Message[:i])
+			note = strings.TrimSpace(c.Message[i+2:])
+		}
 		versions = append(versions, Version{
 			Hash:    c.Hash.String(),
 			Short:   c.Hash.String()[:7],
 			When:    c.Author.When.Format(time.RFC3339),
 			Author:  c.Author.Name,
-			Message: strings.SplitN(c.Message, "\n", 2)[0],
+			Message: subject,
+			Note:    note,
 		})
 	}
 	return versions, nil

@@ -42,7 +42,8 @@ This works because every Upload also commits a small `.savesync.json` manifest a
 
 - On the device you just played on: **⬆ Upload save**.
 - On the other device, before playing: **⬇ Download save** (overwrites its local folder with the latest).
-- **Versions** lists every upload; history lives in GitHub, so you can always recover an older save from the repo.
+- **Versions** lists every upload. **Click any version to restore it** to your local folder; a banner warns when you're on an older version, and the one currently on your device is tagged. History lives in GitHub, so nothing is ever lost.
+- **Notes** — the note you type before uploading is saved with that version and shown in the list, so you can record what a save contains (e.g. "beat fire temple, 3 hearts").
 - **Update badges** — the app polls the remote every ~15s and shows **⬇ Update available** on a game when another device has pushed a newer save than you last synced (the Download button pulses). It never downloads on its own — you still click Download. **✓ In sync** means you're at the latest.
 
 > One rule keeps it clean: **download before you play, upload after.** Then history stays linear and nothing is ever lost. (If a device uploads while behind, it force-overwrites the branch tip — but every prior commit is still in the repo.)

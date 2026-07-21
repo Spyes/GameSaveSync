@@ -59,13 +59,24 @@
   @keyframes spin { to { transform: rotate(360deg); } }
   .empty { color: var(--muted); padding: 20px; text-align: center; }
   .cardhead { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .headright { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
   .badge { font-size: 12px; font-weight: 600; padding: 3px 9px; border-radius: 999px; white-space: nowrap; }
   .badge:empty { display: none; }
   .badge.update { background: var(--accent); color: #fff; }
   .badge.insync { background: rgba(46,204,113,.15); color: #2ecc71; }
   .badge.err { background: rgba(255,92,92,.12); color: var(--danger); }
+  .badge.remove { background: rgba(255,92,92,.12); color: var(--danger); border: none; cursor: pointer; font: inherit; font-size: 12px; font-weight: 600; }
+  .badge.remove:hover { background: rgba(255,92,92,.22); }
   button.down.attention { box-shadow: 0 0 0 2px var(--accent); animation: pulse 1.6s ease-in-out infinite; }
   @keyframes pulse { 0%,100% { box-shadow: 0 0 0 2px var(--accent); } 50% { box-shadow: 0 0 0 4px var(--accent); } }
+  .versionsbtn { margin-top: 4px; padding-left: 0; }
+  .notlatest { font-size: 13px; background: rgba(79,140,255,.12); color: var(--accent); padding: 8px 10px; border-radius: 8px; margin-bottom: 8px; }
+  .verline { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+  .vertag { margin-left: 6px; font-size: 11px; background: rgba(46,204,113,.18); color: #2ecc71; padding: 1px 7px; border-radius: 999px; }
+  .vernote { font-size: 13px; color: var(--text); margin-top: 3px; white-space: pre-wrap; }
+  .ver.clickable { cursor: pointer; border-radius: 6px; padding-left: 6px; margin-left: -6px; }
+  .ver.clickable:hover { background: var(--panel2); }
+  .ver.current { background: rgba(79,140,255,.08); border-left: 2px solid var(--accent); padding-left: 8px; border-radius: 4px; }
 </style>
 </head>
 <body>
@@ -204,10 +215,10 @@ function renderCard(s) {
 
   const uploadBtn = el("button", { className: "up", textContent: "⬆ Upload save" });
   const downloadBtn = el("button", { className: "down", textContent: "⬇ Download save" });
-  const versionsBtn = el("button", { className: "link", textContent: "Versions" });
-  const deleteBtn = el("button", { className: "link", textContent: "Remove", style: "margin-left:auto" });
-  const note = el("input", { placeholder: "optional note for this upload", style: "flex:1 1 200px" });
+  const versionsBtn = el("button", { className: "link versionsbtn", textContent: "▸ Versions" });
+  const note = el("input", { placeholder: "optional note — saved with this version (e.g. \"beat fire temple, 3 hearts\")", style: "flex:1 1 220px" });
   const badge = el("span", { className: "badge" });
+  const removeBadge = el("button", { className: "badge remove", textContent: "✕ Remove", title: "Remove from this list (files & history are kept)" });
   badges[s.id] = { badge, downloadBtn };
 
   uploadBtn.onclick = async () => {
@@ -217,7 +228,7 @@ function renderCard(s) {
       const r = await api("POST", `/api/syncs/${s.id}/upload`, { note: note.value });
       showStatus(status, r.result, true);
       note.value = "";
-      if (versions.classList.contains("show")) loadVersions(s, versions);
+      if (versions.classList.contains("show")) loadVersions(s, versions, status);
       pollStatus();
     } catch (e) { showStatus(status, e.message, false); }
     setBtnBusy(uploadBtn, false, "⬆ Upload save");
@@ -228,49 +239,80 @@ function renderCard(s) {
     setBtnBusy(downloadBtn, true, "Downloading");
     status.className = "status";
     try {
-      const r = await api("POST", `/api/syncs/${s.id}/download`);
+      const r = await api("POST", `/api/syncs/${s.id}/download`, {});
       showStatus(status, r.result, true);
+      if (versions.classList.contains("show")) loadVersions(s, versions, status);
       pollStatus();
     } catch (e) { showStatus(status, e.message, false); }
     setBtnBusy(downloadBtn, false, "⬇ Download save");
   };
 
   versionsBtn.onclick = () => {
-    versions.classList.toggle("show");
-    if (versions.classList.contains("show")) loadVersions(s, versions);
+    const open = versions.classList.toggle("show");
+    versionsBtn.textContent = (open ? "▾ Versions" : "▸ Versions");
+    if (open) loadVersions(s, versions, status);
   };
 
-  deleteBtn.onclick = async () => {
+  removeBadge.onclick = async () => {
     if (!confirm(`Remove "${s.name}" from this list? (Your files and GitHub history are not deleted.)`)) return;
     await api("DELETE", `/api/syncs/${s.id}`);
     loadSyncs();
   };
 
   const card = el("div", { className: "card" }, [
-    el("div", { className: "cardhead" }, [el("h3", { textContent: s.name }), badge]),
+    el("div", { className: "cardhead" }, [
+      el("h3", { textContent: s.name }),
+      el("div", { className: "headright" }, [badge, removeBadge]),
+    ]),
     el("div", { className: "meta", textContent: s.repoUrl }),
     el("div", { className: "meta", textContent: s.localPath }),
     el("div", { className: "actions" }, [uploadBtn, downloadBtn, note]),
-    el("div", { className: "actions" }, [versionsBtn, deleteBtn]),
     status,
+    versionsBtn,
     versions,
   ]);
   if (s.lastAction) showStatus(status, "Last: " + s.lastAction, true);
   return card;
 }
 
-async function loadVersions(s, node) {
+async function loadVersions(s, node, status) {
   node.innerHTML = '<div class="ver when">Loading history…</div>';
   try {
-    const vs = await api("GET", `/api/syncs/${s.id}/history`);
+    const data = await api("GET", `/api/syncs/${s.id}/history`);
+    const versions = data.versions || [];
     node.innerHTML = "";
-    if (!vs.length) { node.append(el("div", { className: "ver when", textContent: "No versions yet." })); return; }
-    for (const v of vs) {
-      node.append(el("div", { className: "ver" }, [
-        el("code", { textContent: v.short }),
-        el("span", { textContent: "  " + v.message + "  " }),
-        el("span", { className: "when", textContent: new Date(v.when).toLocaleString() }),
-      ]));
+    if (!versions.length) { node.append(el("div", { className: "ver when", textContent: "No versions yet." })); return; }
+
+    const onOlder = data.current && data.latest && data.current !== data.latest;
+    if (onOlder) {
+      node.append(el("div", { className: "notlatest",
+        textContent: "⚠ You're on an older version locally. Click the newest version (top) to return to the latest." }));
+    }
+
+    for (const v of versions) {
+      const isCurrent = v.hash === data.current;
+      const row = el("div", { className: "ver" + (isCurrent ? " current" : " clickable") });
+      const meta = el("span", { className: "when",
+        textContent: "  " + new Date(v.when).toLocaleString() + (v.author ? " · " + v.author : "") });
+      const line = el("div", { className: "verline" }, [el("code", { textContent: v.short }), meta]);
+      if (isCurrent) line.append(el("span", { className: "vertag", textContent: "on this device" }));
+      row.append(line);
+      if (v.note) row.append(el("div", { className: "vernote", textContent: v.note }));
+
+      if (!isCurrent) {
+        row.title = "Download this version to your local folder";
+        row.onclick = async () => {
+          if (!confirm(`Download version ${v.short} of "${s.name}"?\nThis overwrites the local folder with that version.` + (v.note ? `\n\nNote: ${v.note}` : ""))) return;
+          row.style.opacity = ".5";
+          try {
+            const r = await api("POST", `/api/syncs/${s.id}/download`, { hash: v.hash });
+            if (status) showStatus(status, r.result, true);
+            loadVersions(s, node, status);
+            pollStatus();
+          } catch (e) { row.style.opacity = "1"; if (status) showStatus(status, e.message, false); }
+        };
+      }
+      node.append(row);
     }
   } catch (e) {
     node.innerHTML = "";

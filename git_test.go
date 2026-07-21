@@ -81,7 +81,7 @@ func TestRoundTrip(t *testing.T) {
 	dst := t.TempDir()
 	writeFile(t, filepath.Join(dst, "stale.txt"), "should be deleted")
 	sB := &Sync{ID: "b", Name: "GameA", RepoURL: repoURL, LocalPath: dst}
-	if res, _, err := Download(sB, ""); err != nil {
+	if res, _, err := Download(sB, "", ""); err != nil {
 		t.Fatalf("download: %v", err)
 	} else {
 		t.Logf("download: %s", res)
@@ -124,7 +124,7 @@ func TestDownloadUnknownNameProtectsLocal(t *testing.T) {
 	// Download a name that doesn't exist in the repo.
 	dst := t.TempDir()
 	writeFile(t, filepath.Join(dst, "precious.txt"), "keep me")
-	_, _, err := Download(&Sync{ID: "b", Name: "GameB", RepoURL: remote, LocalPath: dst}, "")
+	_, _, err := Download(&Sync{ID: "b", Name: "GameB", RepoURL: remote, LocalPath: dst}, "", "")
 	if err == nil {
 		t.Fatal("expected error downloading unknown name, got nil")
 	}
@@ -245,5 +245,54 @@ func TestRemoteStatus(t *testing.T) {
 	}
 	if got := get(Sync{ID: "behind", Name: "GameA", LastSyncedRemote: h1}); got != "update-available" {
 		t.Errorf("behind: got %q, want update-available", got)
+	}
+}
+
+// TestVersionDownloadAndNote verifies the upload note is surfaced in history
+// and that a specific older version can be downloaded by its commit hash.
+func TestVersionDownloadAndNote(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+
+	remote := t.TempDir()
+	if out, err := exec.Command("git", "init", "--bare", "-b", "main", remote).CombinedOutput(); err != nil {
+		t.Fatalf("git init --bare: %v\n%s", err, out)
+	}
+
+	src := t.TempDir()
+	s := &Sync{ID: "a", Name: "GameA", RepoURL: remote, LocalPath: src}
+
+	writeFile(t, filepath.Join(src, "save.dat"), "v1")
+	_, v1, err := Upload(s, "", "deviceA", "beat the fire temple")
+	if err != nil {
+		t.Fatalf("upload v1: %v", err)
+	}
+
+	writeFile(t, filepath.Join(src, "save.dat"), "v2")
+	if _, _, err := Upload(s, "", "deviceA", ""); err != nil {
+		t.Fatalf("upload v2: %v", err)
+	}
+
+	// History: newest first, note attached to the first upload.
+	vs, err := History(s, "", 100)
+	if err != nil {
+		t.Fatalf("history: %v", err)
+	}
+	if len(vs) != 2 {
+		t.Fatalf("expected 2 versions, got %d", len(vs))
+	}
+	if vs[1].Note != "beat the fire temple" {
+		t.Errorf("note not surfaced in history: %q", vs[1].Note)
+	}
+
+	// Local currently holds v2; download the older version v1 by hash.
+	if _, synced, err := Download(s, "", v1); err != nil {
+		t.Fatalf("download version: %v", err)
+	} else if synced != v1 {
+		t.Errorf("synced hash = %q, want v1 %q", synced, v1)
+	}
+	if got := mustRead(t, filepath.Join(src, "save.dat")); got != "v1" {
+		t.Errorf("after version download, save.dat = %q, want v1", got)
 	}
 }
