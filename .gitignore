@@ -1,6 +1,8 @@
 # Compiled binaries (attached to GitHub Releases, not committed)
 /dist/
 /build/
+/save-sync
+/save-sync.exe
 
 # OS / editor cruft
 .DS_Store

@@ -80,6 +80,18 @@
   <h2>Your saves</h2>
   <div id="list"></div>
 
+  <h2>Discover games from another device</h2>
+  <div class="panel">
+    <div class="row">
+      <button class="primary" id="discoverGitHub">🔍 Discover from GitHub</button>
+      <input id="importUrl" placeholder="…or paste a repo URL to import" style="flex:1 1 220px" />
+      <button id="importRepo">Import</button>
+    </div>
+    <div class="hint">Finds games set up on your other devices. You only pick this device's local folder for each. “Discover from GitHub” scans every repo your token can see.</div>
+    <div class="status" id="discoverStatus"></div>
+    <div id="discovered"></div>
+  </div>
+
   <h2>Add a save</h2>
   <div class="panel">
     <label for="name">Name (also the folder name inside the repo)</label>
@@ -245,6 +257,72 @@ document.getElementById("addSync").onclick = async () => {
     showStatus(status, "Added.", true);
     loadSyncs();
   } catch (e) { showStatus(status, e.message, false); }
+};
+
+function renderDiscovered(games) {
+  const box = document.getElementById("discovered");
+  box.innerHTML = "";
+  if (!games.length) {
+    box.append(el("div", { className: "ver when", style: "padding:8px 0", textContent: "No games found." }));
+    return;
+  }
+  for (const g of games) {
+    const hint = (g.pathHints && g.pathHints[statusInfo.os]) || "";
+    const folder = el("input", { value: hint, placeholder: "local save folder on this device", style: "flex:1 1 220px" });
+    const adopt = el("button", { className: "primary", textContent: "Adopt" });
+    const note = el("div", { className: "ver when" });
+
+    if (g.alreadyConfigured) {
+      adopt.disabled = true;
+      note.textContent = "already added on this device";
+    }
+    adopt.onclick = async () => {
+      if (!folder.value.trim()) { note.className = "status err"; note.textContent = "Pick a local folder first."; return; }
+      setBtnBusy(adopt, true, "Adding");
+      try {
+        await api("POST", "/api/syncs", { name: g.name, repoUrl: g.repoUrl, localPath: folder.value.trim() });
+        note.className = "ver when"; note.textContent = "added ✓";
+        adopt.disabled = true;
+        loadSyncs();
+      } catch (e) { note.className = "status err"; note.textContent = e.message; }
+      setBtnBusy(adopt, false, "Adopt");
+    };
+
+    box.append(el("div", { className: "card", style: "margin-top:10px" }, [
+      el("h3", { textContent: g.name }),
+      el("div", { className: "meta", textContent: g.repoUrl }),
+      el("div", { className: "actions" }, [folder, adopt]),
+      note,
+    ]));
+  }
+}
+
+document.getElementById("discoverGitHub").onclick = async () => {
+  const btn = document.getElementById("discoverGitHub");
+  const status = document.getElementById("discoverStatus");
+  status.className = "status";
+  setBtnBusy(btn, true, "Scanning");
+  try {
+    const games = await api("GET", "/api/discover/github");
+    showStatus(status, `Found ${games.length} game(s).`, true);
+    renderDiscovered(games);
+  } catch (e) { showStatus(status, e.message, false); }
+  setBtnBusy(btn, false, "🔍 Discover from GitHub");
+};
+
+document.getElementById("importRepo").onclick = async () => {
+  const btn = document.getElementById("importRepo");
+  const status = document.getElementById("discoverStatus");
+  const url = document.getElementById("importUrl").value.trim();
+  if (!url) { showStatus(status, "Paste a repo URL first.", false); return; }
+  status.className = "status";
+  setBtnBusy(btn, true, "Importing");
+  try {
+    const games = await api("POST", "/api/discover/repo", { repoUrl: url });
+    showStatus(status, `Found ${games.length} game(s) in that repo.`, true);
+    renderDiscovered(games);
+  } catch (e) { showStatus(status, e.message, false); }
+  setBtnBusy(btn, false, "Import");
 };
 
 loadStatus();

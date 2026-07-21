@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -129,5 +130,72 @@ func TestDownloadUnknownNameProtectsLocal(t *testing.T) {
 	}
 	if _, statErr := os.Stat(filepath.Join(dst, "precious.txt")); statErr != nil {
 		t.Errorf("local file must be preserved when name not found: %v", statErr)
+	}
+}
+
+// TestManifestAndDiscover verifies that Upload writes a discoverable manifest
+// (with a path hint for this OS) and that DiscoverRepo surfaces the game.
+func TestManifestAndDiscover(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+
+	remote := t.TempDir()
+	if out, err := exec.Command("git", "init", "--bare", remote).CombinedOutput(); err != nil {
+		t.Fatalf("git init --bare: %v\n%s", err, out)
+	}
+
+	src := t.TempDir()
+	writeFile(t, filepath.Join(src, "save.dat"), "v1")
+	if _, err := Upload(&Sync{ID: "a", Name: "Elden Ring", RepoURL: remote, LocalPath: src}, "", "deviceA", ""); err != nil {
+		t.Fatalf("upload: %v", err)
+	}
+
+	games, err := DiscoverRepo(remote, "")
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	if len(games) != 1 || games[0].Name != "Elden Ring" {
+		t.Fatalf("expected [Elden Ring], got %+v", games)
+	}
+	if got := games[0].PathHints[runtime.GOOS]; got != src {
+		t.Errorf("path hint for %s = %q, want %q", runtime.GOOS, got, src)
+	}
+}
+
+// TestDiscoverFallbackNoManifest verifies that a repo with a game subfolder but
+// no manifest still lists the subfolder as a game.
+func TestDiscoverFallbackNoManifest(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+
+	// Build a bare remote whose working content is a "GameX/" folder with no
+	// .savesync.json, by committing via a throwaway clone.
+	remote := t.TempDir()
+	if out, err := exec.Command("git", "init", "--bare", "-b", "main", remote).CombinedOutput(); err != nil {
+		t.Fatalf("git init --bare: %v\n%s", err, out)
+	}
+	work := t.TempDir()
+	run := func(args ...string) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = work
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run("init", "-q", "-b", "main")
+	writeFile(t, filepath.Join(work, "GameX", "save.dat"), "hi")
+	run("add", "-A")
+	run("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "seed")
+	run("remote", "add", "origin", remote)
+	run("push", "-q", "origin", "main")
+
+	games, err := DiscoverRepo(remote, "")
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	if len(games) != 1 || games[0].Name != "GameX" {
+		t.Fatalf("expected fallback [GameX], got %+v", games)
 	}
 }

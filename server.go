@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
+	"runtime"
 	"strings"
 )
 
@@ -44,6 +45,8 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("/api/settings/token", s.handleToken)
 	mux.HandleFunc("/api/syncs", s.handleSyncs)     // GET list, POST add
 	mux.HandleFunc("/api/syncs/", s.handleSyncItem) // /{id}, /{id}/upload, /{id}/download, /{id}/history
+	mux.HandleFunc("/api/discover/repo", s.handleDiscoverRepo)
+	mux.HandleFunc("/api/discover/github", s.handleDiscoverGitHub)
 
 	return mux
 }
@@ -61,6 +64,7 @@ func writeErr(w http.ResponseWriter, code int, err error) {
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"device":   deviceName(),
+		"os":       runtime.GOOS,
 		"hasToken": s.cfg.GithubToken != "",
 	})
 }
@@ -111,6 +115,13 @@ func (s *Server) handleSyncs(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.cfg.mu.Lock()
+		for _, existing := range s.cfg.Syncs {
+			if existing.RepoURL == in.RepoURL && existing.Name == in.Name {
+				s.cfg.mu.Unlock()
+				writeErr(w, http.StatusConflict, fmt.Errorf("a save named %q for this repo already exists", in.Name))
+				return
+			}
+		}
 		in.ID = newSubID()
 		s.cfg.Syncs = append(s.cfg.Syncs, &in)
 		err := s.cfg.save()
@@ -256,4 +267,54 @@ func (s *Server) recordAction(sync *Sync, result string) {
 	sync.LastAction = result
 	_ = s.cfg.save()
 	s.cfg.mu.Unlock()
+}
+
+// markConfigured flags games that already exist locally (matched by repoUrl +
+// name) so the UI can grey them out.
+func (s *Server) markConfigured(games []DiscoveredGame) []DiscoveredGame {
+	s.cfg.mu.Lock()
+	defer s.cfg.mu.Unlock()
+	for i := range games {
+		for _, existing := range s.cfg.Syncs {
+			if existing.RepoURL == games[i].RepoURL && existing.Name == games[i].Name {
+				games[i].AlreadyConfigured = true
+				break
+			}
+		}
+	}
+	return games
+}
+
+func (s *Server) handleDiscoverRepo(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, fmt.Errorf("use POST"))
+		return
+	}
+	var body struct {
+		RepoURL string `json:"repoUrl"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	body.RepoURL = strings.TrimSpace(body.RepoURL)
+	if body.RepoURL == "" {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("repoUrl is required"))
+		return
+	}
+	games, err := DiscoverRepo(body.RepoURL, s.cfg.GithubToken)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.markConfigured(games))
+}
+
+func (s *Server) handleDiscoverGitHub(w http.ResponseWriter, r *http.Request) {
+	games, err := DiscoverGitHub(s.cfg.GithubToken)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, s.markConfigured(games))
 }

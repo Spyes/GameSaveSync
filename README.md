@@ -25,7 +25,16 @@ Your browser opens to the UI automatically. Flags: `--port <n>` (default 8787), 
    - **GitHub repo URL** — e.g. `https://github.com/you/game-saves.git`
    - **Local save folder** — the game's save directory on this device (see below).
 
-Repeat the setup (token + add save) on the second device, using the **same repo URL and the same Name**, but that device's own local folder.
+## Setting up a second device (discovery)
+
+You don't have to re-enter each game by hand. On the new device, set its PAT, then under **Discover games from another device**:
+
+- **🔍 Discover from GitHub** — scans every repo your token can see for save-sync games and lists them all. Or
+- **Import from repo URL** — paste your saves repo URL (e.g. `https://github.com/you/game-saves.git`) to list the games in it.
+
+For each game found, pick **this device's** local folder and click **Adopt**. (The local path can't be shared across devices, but the tool prefills a guess from the folder the other device used.) Games already set up here are greyed out.
+
+This works because every Upload also commits a small `.savesync.json` manifest at the repo root describing the games — that's what a new device reads. Repos created before this feature are still discoverable by URL (their subfolders are listed); they gain a manifest on the next upload.
 
 ## Everyday use
 

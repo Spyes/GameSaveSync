@@ -6,6 +6,8 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -158,6 +160,13 @@ func Upload(s *Sync, token, device, note string) (string, error) {
 		return "", err
 	}
 
+	// Update the self-describing manifest so other devices can discover this
+	// game (see manifest.go). Failure here shouldn't abort the save upload.
+	if m, err := readManifest(cachePath); err == nil {
+		upsertGame(m, s.Name, runtime.GOOS, s.LocalPath, device)
+		_ = writeManifest(cachePath, m)
+	}
+
 	w, err := repo.Worktree()
 	if err != nil {
 		return "", err
@@ -297,4 +306,55 @@ func History(s *Sync, token string, limit int) ([]Version, error) {
 		})
 	}
 	return versions, nil
+}
+
+// DiscoverRepo clones/updates a repo and lists the games it contains, so a new
+// device can adopt them. It prefers the committed manifest; for repos created
+// before manifests existed it falls back to listing top-level directories.
+func DiscoverRepo(repoURL, token string) ([]DiscoveredGame, error) {
+	cachePath, err := repoCachePath(repoURL)
+	if err != nil {
+		return nil, err
+	}
+	repo, err := ensureRepo(repoURL, cachePath, "main", token)
+	if err != nil {
+		return nil, err
+	}
+	branch := resolveBranch(repo, "")
+	if err := fetchOrigin(repo, token); err != nil {
+		return nil, err
+	}
+	hadRemote, err := resetToRemote(repo, branch)
+	if err != nil {
+		return nil, err
+	}
+	if !hadRemote {
+		return nil, fmt.Errorf("repo has no commits yet — upload a save to it first")
+	}
+
+	games := []DiscoveredGame{}
+	m, err := readManifest(cachePath)
+	if err == nil && len(m.Games) > 0 {
+		for _, g := range m.Games {
+			games = append(games, DiscoveredGame{Name: g.Name, RepoURL: repoURL, PathHints: g.PathHints})
+		}
+		return games, nil
+	}
+
+	// Fallback: treat each top-level directory as a game.
+	entries, err := os.ReadDir(cachePath)
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, e := range entries {
+		if e.IsDir() && e.Name() != ".git" {
+			names = append(names, e.Name())
+		}
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		games = append(games, DiscoveredGame{Name: n, RepoURL: repoURL})
+	}
+	return games, nil
 }
